@@ -155,25 +155,6 @@ date >&2;
     split -d -a 4 -l "${split_lines}" "${train_lst}" "${train_prefix}";
     train_lst=( $(ls "${train_prefix}"* || exit 1) );
 }
-###
-######
-######
-######
-######
-######
-######
-######
-###
-# CCCCOOOOOONFIIIIG!!!!!!!!!!!!!!!!!!!!!
-##
-###
-######
-######
-######
-######
-######
-######
-###
 
 ## HMM Training
 g=1;
@@ -225,7 +206,7 @@ date >&2;" | qsub -cwd ${hhed_qsub_opts} ${hold_jid} | \
     awk '/Your job/{print $3}' || { \
     echo "ERROR (${0##*/}:${LINENO}): qsub job submission failed!"; \
     exit 1; });
-                echo "--- Submitted job ID: ${last_jid}";
+                echo "--- Submitted job: ${last_jid}";
             fi;
 	    g=$ng;
         }
