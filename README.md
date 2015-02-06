@@ -71,21 +71,21 @@ Arguments:
   out_dir    : Working directory where the training will write results.
 
 Options:
-  --em_iters     : type = integer, default = 4
-                   Number of EM iterations, for each number of mixtures.
-  --mix_iters    : type = integer, default = 7
-                   Number of times the mixtures are incremented.
-  --mix_factor   : type = float, default = 2.0
-                   Increment the number of mixtures by this factor.
-  --num_states   : type = interger, default = 6
-                   Number of states in each Hidden Markov Model.
-  --num_tasks    : type = integer, default = 1
-                   Perform parallel training splitting the input SCP in this
-                   number of tasks.
-  --overwrite    : type = boolean, default = true
-                   If true, overwrites any previous existing result.
-  --qsub         : type = boolean, default =
-                   If true, parallelize training using SGE qsub.
+  --em_iters      : type = integer, default = 4
+                    Number of EM iterations, for each number of mixtures.
+  --mix_iters     : type = integer, default = 7
+                    Number of times the mixtures are incremented.
+  --mix_factor    : type = float, default = 2.0
+                    Increment the number of mixtures by this factor.
+  --num_states    : type = interger, default = 6
+                    Number of states in each Hidden Markov Model.
+  --num_tasks     : type = integer, default = 1
+                    Perform parallel training splitting the input SCP in this
+                    number of tasks.
+  --overwrite     : type = boolean, default = true
+                    If true, overwrites any previous existing result.
+  --qsub          : type = boolean, default =
+                    If true, parallelize training using SGE qsub.
   --qsub_em_mem   : type = string, default = "256M"
                     Requested maximum memory by qsub for the EM tasks.
   --qsub_em_rt    : type = string, default = "10:00:00"
@@ -103,7 +103,7 @@ Options:
                     Requested maximum running time by qsub for the HMM
                     initialization step.
   --qsub_opts     : type = string, default = ""
-                   Other qsub options. Qsub may be called with additional
-                   options added automatically, like "-cwd", "-t",
-                   "-l h_vmem", "-l h_rt", etc.
+                    Other qsub options. Qsub may be called with additional
+                    options added automatically, like "-cwd", "-t",
+                    "-l h_vmem", "-l h_rt", etc.
 ```

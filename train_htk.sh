@@ -47,21 +47,21 @@ Arguments:
   out_dir    : Working directory where the training will write results.
 
 Options:
-  --em_iters     : type = integer, default = ${em_iters}
-                   Number of EM iterations, for each number of mixtures.
-  --mix_iters    : type = integer, default = ${mix_iters}
-                   Number of times the mixtures are incremented.
-  --mix_factor   : type = float, default = ${mix_factor}
-                   Increment the number of mixtures by this factor.
-  --num_states   : type = interger, default = ${num_states}
-                   Number of states in each Hidden Markov Model.
-  --num_tasks    : type = integer, default = ${num_tasks}
-                   Perform parallel training splitting the input SCP in this
-                   number of tasks.
-  --overwrite    : type = boolean, default = ${overwrite}
-                   If true, overwrites any previous existing result.
-  --qsub         : type = boolean, default = ${use_sge}
-                   If true, parallelize training using SGE qsub.
+  --em_iters      : type = integer, default = ${em_iters}
+                    Number of EM iterations, for each number of mixtures.
+  --mix_iters     : type = integer, default = ${mix_iters}
+                    Number of times the mixtures are incremented.
+  --mix_factor    : type = float, default = ${mix_factor}
+                    Increment the number of mixtures by this factor.
+  --num_states    : type = interger, default = ${num_states}
+                    Number of states in each Hidden Markov Model.
+  --num_tasks     : type = integer, default = ${num_tasks}
+                    Perform parallel training splitting the input SCP in this
+                    number of tasks.
+  --overwrite     : type = boolean, default = ${overwrite}
+                    If true, overwrites any previous existing result.
+  --qsub          : type = boolean, default = ${use_sge}
+                    If true, parallelize training using SGE qsub.
   --qsub_em_mem   : type = string, default = \"${qsub_em_mem}\"
                     Requested maximum memory by qsub for the EM tasks.
   --qsub_em_rt    : type = string, default = \"${qsub_em_rt}\"
@@ -79,9 +79,9 @@ Options:
                     Requested maximum running time by qsub for the HMM
                     initialization step.
   --qsub_opts     : type = string, default = \"${qsub_opts}\"
-                   Other qsub options. Qsub may be called with additional
-                   options added automatically, like \"-cwd\", \"-t\",
-                   \"-l h_vmem\", \"-l h_rt\", etc.
+                    Other qsub options. Qsub may be called with additional
+                    options added automatically, like \"-cwd\", \"-t\",
+                    \"-l h_vmem\", \"-l h_rt\", etc.
 ";
 
 . "${SDIR}/parse_options.sh" || exit 1;
