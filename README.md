@@ -48,8 +48,11 @@ might be wiser to schedule a single job running different processes. In the
 following examples, 4 tasks are run in parallel in a single SGE job.
 
 ```bash
-qsub -pe mp 4 train_htk.sh --num_tasks 4 htp_config train.scp train.mlf hmm_symbols.lst exp_dir
+qsub -cwd -b y -pe mp 4 train_htk.sh --num_tasks 4 htk_config train.scp train.mlf hmm_symbols.lst exp_dir
 ```
+
+Option `-b y` is mandatory, otherwise SGE will fail to refer to some scripts
+needed by `train_htk.sh`.
 
 ### Usage
 
