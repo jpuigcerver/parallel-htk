@@ -60,7 +60,7 @@ Options:
                     number of tasks.
   --overwrite     : type = boolean, default = ${overwrite}
                     If true, overwrites any previous existing result.
-  --qsub          : type = boolean, default = ${use_sge}
+  --qsub          : type = boolean, default = ${qsub}
                     If true, parallelize training using SGE qsub.
   --qsub_em_mem   : type = string, default = \"${qsub_em_mem}\"
                     Requested maximum memory by qsub for the EM tasks.
