@@ -214,8 +214,8 @@ date >&2;" | qsub -cwd ${hhed_qsub_opts} ${hold_jid} | \
     exit 1; });
                 echo "--- Submitted job: ${last_jid}";
             fi;
-	    g=$ng;
         }
+	g=$ng;
     }
 done
 exit 0;

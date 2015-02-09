@@ -1,0 +1,123 @@
+#!/bin/bash
+
+# Copyright 2015  Joan Puigcerver
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# THIS CODE IS PROVIDED *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY IMPLIED
+# WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
+# MERCHANTABLITY OR NON-INFRINGEMENT.
+# See the Apache 2 License for the specific language governing permissions and
+# limitations under the License.
+
+## Script directory
+SDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd );
+CMD_PARSE="${SDIR}/parallel-htk-cmd-parse";
+CMD_PROTO="${SDIR}/parallel-htk-hmm-proto";
+CMD_HINIT="${SDIR}/parallel-htk-hmm-init";
+CMD_HERLOC="${SDIR}/parallel-htk-herest-local";
+CMD_HERSGE="${SDIR}/parallel-htk-herest-sge";
+
+beam=0.0;
+gsf=1.0;
+lattice_info="Atval";
+wip=0.0;
+word_net="";
+max_node_in=1;
+max_nbests=1;
+qsub=false;
+qsub_opts="";
+help_message="
+Usage: ${0##*/} [options] <htk_config> <hmms> <lexicon> <hmm_symbs> <out_dir> <test_lst> ...
+
+Arguments:
+  htk_config  : HTK configuration file.
+  hmms        : File containing the HMMs definitions.
+  lexicon     : HTK lexicon file containing the mapping from words to HMM
+                symbols.
+  hmm_symbs   : File containing the list of the HMM symbols to train.
+  out_dir     : Output directory containing the decoding hypothesis,
+                lattices, etc.
+  test_lst(s) : Input files containing the list of feature files to decode.
+                If multiple files are given, each of them will be decoded by
+                a separate local process or SGE task.
+
+Options:
+  --beam         : type = float, default = ${beam}
+                   Viterbi search beam width.
+  --gsf          : type = float, default = ${gsf}
+                   Grammar scale factor.
+  --lattice_info : type = string, default = \"${lattice_info}\"
+                   HTK output lattice formating.
+  --wip          : type = float, default = ${wip}
+                   Word insertion penalty.
+  --word_net     : type = string, default = \"${word_net}\"
+                   Use this network (a.k.a. language model) to recognize the
+                   utterances.
+  --max_node_in  : type = integer, default = ${max_node_in}
+                   Maximum node input degree.
+  --max_nbests   : type = integer, default = ${max_nbests}
+                   Maximum number of n-best decoding hypotheses.
+  --qsub         : type = boolean, default = ${qsub}
+                   Run jobs in SGE using qsub.
+  --qsub_opts    : type = string, default = \"${qsub_opts}\"
+                   Other qsub options. Qsub may be called with additional
+                   options added automatically, like \"-cwd\", \"-t\".
+";
+
+. "${CMD_PARSE}" || exit 1;
+[ $# -lt 6 ] && echo "${help_message}" >&2 && exit 1;
+
+config="$1";
+hmms="$2";
+lexicon="$3";
+hmm_symbs="$4";
+wdir="$5";
+shift 5;
+test_lst=( "$@" );
+
+## Check input files
+for file in "${config}" "${hmms}" "${lexicon}" "${hmm_symbs}" \
+    "${test_lst[@]}"; do
+    [ ! -s "${file}" ] && \
+        echo "ERROR (${0##*/}:${LINENO}): File \"${file}\" not found!" >&2 && \
+        exit 1;
+done;
+
+## Check word network file
+[ -n "${word_net}" ] && [ ! -s "${word_net}" ] && \
+    echo "ERROR (${0##*/}:${LINENO}): File \"${word_net}\" not found!" >&2 && \
+    exit 1;
+[ -n "${word_net}" ] && word_net="-w ${word_net}";
+
+
+
+mkdir -p "${wdir}"
+if [ "${qsub}" = false ]; then
+    for n in $(seq 1 "${#test_lst[@]}"); do
+        HVite -A -T 1 -C "${config}" -z lat -l "${wdir}" -t "${beam}" \
+            -s "${gsf}" -p "${wip}" -q "${lattice_info}" ${word_net} \
+            -H "${hmms}" -S "${test_lst[n-1]}" "${lexicon}" "${hmm_symbs}" \
+            &> "${wdir}/HVite.${n}.log" || exit 1 &
+    done;
+    wait || exit 1;
+else
+    for n in $(seq 1 "${#test_lst[@]}"); do
+        cat <<EOF
+[ \${SGE_TASK_ID} -eq ${n} ] && {
+HVite -A -T 1 -C "${config}" -z lat -l "${wdir}" -t "${beam}" -s "${gsf}" \
+    -p "${wip}" -q "${lattice_info}" -n "${max_node_in}" "${max_nbests}" \
+    ${word_net} -H "${hmms}" -S "${test_lst[n-1]}" "${lexicon}" "${hmm_symbs}" \
+    &> "${wdir}/HVite.${n}.log" || exit 1;
+}
+EOF
+    done | qsub ${qsub_opts} -cwd -t "1-${#test_lst[@]}" || { \
+        echo "ERROR (${0##*/}:${LINENO}): qsub job submission failed!"; \
+        exit 1; }
+fi;
+exit 0;
