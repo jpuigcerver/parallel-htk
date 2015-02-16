@@ -94,14 +94,22 @@ done;
     echo "ERROR (${0##*/}:${LINENO}): File \"${word_net}\" not found!" >&2 && \
     exit 1;
 [ -n "${word_net}" ] && word_net="-w ${word_net}";
+[ "${max_node_in}" -lt "${max_nbests}" ] && \
+    echo "ERROR (${0##*/}:${LINENO}): Invalid max_node_in and max_nbests!" >&2 && \
+    exit 1;
 
-
+if [ "${max_node_in}" -eq 1 ]; then
+    max_node_and_nbests="";
+else
+    max_node_and_nbests="-n ${max_node_in} ${max_nbests}";
+fi;
 
 mkdir -p "${wdir}"
 if [ "${qsub}" = false ]; then
     for n in $(seq 1 "${#test_lst[@]}"); do
         HVite -A -T 1 -C "${config}" -z lat -l "${wdir}" -t "${beam}" \
-            -s "${gsf}" -p "${wip}" -q "${lattice_info}" ${word_net} \
+            -s "${gsf}" -p "${wip}" -q "${lattice_info}" \
+            ${max_node_and_nbests} ${word_net} \
             -H "${hmms}" -S "${test_lst[n-1]}" "${lexicon}" "${hmm_symbs}" \
             &> "${wdir}/HVite.${n}.log" || exit 1 &
     done;
@@ -111,7 +119,7 @@ else
         cat <<EOF
 [ \${SGE_TASK_ID} -eq ${n} ] && {
 HVite -A -T 1 -C "${config}" -z lat -l "${wdir}" -t "${beam}" -s "${gsf}" \
-    -p "${wip}" -q "${lattice_info}" -n "${max_node_in}" "${max_nbests}" \
+    -p "${wip}" -q "${lattice_info}" ${max_node_and_nbests} \
     ${word_net} -H "${hmms}" -S "${test_lst[n-1]}" "${lexicon}" "${hmm_symbs}" \
     &> "${wdir}/HVite.${n}.log" || exit 1;
 }
