@@ -27,7 +27,6 @@ em_iters=4;
 mix_iters=7;
 mix_factor=2.0;
 num_states=6;
-num_tasks=1;
 overwrite=true;
 qsub=false;
 qsub_em_mem="256M";
@@ -38,18 +37,18 @@ qsub_init_mem="120M";
 qsub_init_rt="01:00:00";
 qsub_opts="";
 help_message="
-Usage: ${0##*/} [options] <htk_config> <train_scp> <train_mlf> <symb_list> <out_dir>
+Usage: ${0##*/} [options] <htk_config> <train_mlf> <symb_list> <out_dir> <train_lst> ...
 
 Arguments:
-  htk_config : HTK configuration file. Important: It must define the
-               \"NUMCEPS\" variable, since it will be used to create the
-               initial HMMs.
-  train_scp  : File(s) containing the list of feature files used for training.
-               If multiple files are given, multiple processes will be used
-               for parallel training.
-  train_mlf  : Training labels file, in HTK Master Label Format (MLF).
-  symb_list  : File containing the list of the HMM symbols to train.
-  out_dir    : Working directory where the training will write results.
+  htk_config   : HTK configuration file. Important: It must define the
+                 \"NUMCEPS\" variable, since it will be used to create the
+                 initial HMMs.
+  train_mlf    : Training labels file, in HTK Master Label Format (MLF).
+  symb_list    : File containing the list of the HMM symbols to train.
+  out_dir      : Working directory where the training will write results.
+  train_lst(s) : File(s) containing the list of feature files used for training.
+                 If multiple files are given, multiple processes will be used
+                 for parallel training.
 
 Options:
   --em_iters      : type = integer, default = ${em_iters}
@@ -60,9 +59,6 @@ Options:
                     Increment the number of mixtures by this factor.
   --num_states    : type = interger, default = ${num_states}
                     Number of states in each Hidden Markov Model.
-  --num_tasks     : type = integer, default = ${num_tasks}
-                    Perform parallel training splitting the input SCP in this
-                    number of tasks.
   --overwrite     : type = boolean, default = ${overwrite}
                     If true, overwrites any previous existing result. You may
                     want to set this to false if you want to continue from a
@@ -93,19 +89,21 @@ Options:
 ";
 
 . "${CMD_PARSE}" || exit 1;
-[ $# -ne 5 ] && echo "${help_message}" >&2 && exit 1;
+[ $# -lt 5 ] && echo "${help_message}" >&2 && exit 1;
 
 config="$1";
-train_lst="$2";
-train_mlf="$3";
-symb_lst="$4";
-wdir="$5";
+train_mlf="$2";
+symb_lst="$3";
+wdir="$4";
+shift 4;
+train_lst=( "$@" );
+
 em_qsub_opts="${qsub_opts} -l h_vmem=${qsub_em_mem},h_rt=${qsub_em_rt}";
 hhed_qsub_opts="${qsub_opts} -l h_vmem=${qsub_hhed_mem},h_rt=${qsub_hhed_rt}";
 init_qsub_opts="${qsub_opts} -l h_vmem=${qsub_init_mem},h_rt=${qsub_init_rt}";
 
 ## Check input files
-for file in "${config}" "${train_lst}" "${train_mlf}" "${symb_lst}"; do
+for file in "${config}" "${train_lst[@]}" "${train_mlf}" "${symb_lst}"; do
     [ ! -s "${file}" ] && \
         echo "ERROR (${0##*/}:${LINENO}): File \"${file}\" not found!" >&2 && \
         exit 1;
@@ -123,8 +121,9 @@ echo "--- HMM Initialization ..."
     bash "${CMD_PROTO}" "${feat_dim}" "${num_states}" > "${wdir}/proto" || { \
         echo "ERROR (${0##*/}:${LINENO}): HMM proto creation failed!" >&2; \
         exit 1; }
+    cat "${train_lst[@]}" > "${wdir}/HCompV.in"
     if [ "${qsub}" = false ]; then
-        HCompV -A -T 1 -C "${config}" -f 0.01 -m -S "${train_lst}" \
+        HCompV -A -T 1 -C "${config}" -f 0.01 -m -S "${wdir}/HCompV.in" \
             -M "${wdir}" "${wdir}/proto" &> "${wdir}/HCompV.log" || { \
             echo "ERROR (${0##*/}:${LINENO}): HCompV failed!" >&2; \
             exit 1; }
@@ -135,7 +134,7 @@ echo "--- HMM Initialization ..."
     else
         last_jid=$(echo "
 date >&2;
-HCompV -A -T 1 -C \"${config}\" -f 0.01 -m -S \"${train_lst}\" \
+HCompV -A -T 1 -C \"${config}\" -f 0.01 -m -S \"${wdir}/HCompV.in\" \
    -M \"${wdir}\" \"${wdir}/proto\" &> \"${wdir}/HCompV.log\" || { \
    echo \"ERROR (${0##*/}:${LINENO}): HCompV failed!\" >&2; \
    exit 1; }
@@ -150,16 +149,6 @@ date >&2;
     exit 1; });
         echo "--- Submitted job: ${last_jid}";
     fi;
-}
-
-## Split training data
-[ "${num_tasks}" -gt 1 ] && {
-    total_lines=$(wc -l "${train_lst}" | cut -d\  -f1);
-    split_lines=$(echo "(${total_lines} + ${num_tasks} - 1)/${num_tasks}" | bc);
-    train_prefix="${wdir}/data/$(basename ${train_lst}).part";
-    mkdir -p "${wdir}/data";
-    split -d -a 4 -l "${split_lines}" "${train_lst}" "${train_prefix}";
-    train_lst=( $(ls "${train_prefix}"* || exit 1) );
 }
 
 ## HMM Training

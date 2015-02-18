@@ -43,7 +43,7 @@ Arguments:
   hmm_symbs   : File containing the list of the HMM symbols to train.
   out_dir     : Output directory containing the decoding hypothesis,
                 lattices, etc.
-  test_lst(s) : Input files containing the list of feature files to decode.
+  test_lst(s) : Input file(s) containing the list of feature files to decode.
                 If multiple files are given, each of them will be decoded by
                 a separate local process or SGE task.
 
