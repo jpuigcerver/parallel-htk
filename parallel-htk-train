@@ -24,7 +24,7 @@ CMD_HERLOC="${SDIR}/parallel-htk-herest-local";
 CMD_HERSGE="${SDIR}/parallel-htk-herest-sge";
 
 em_iters=4;
-mix_iters=7;
+mix_iters=6;
 mix_factor=2.0;
 num_states=6;
 overwrite=true;
@@ -153,7 +153,7 @@ date >&2;
 
 ## HMM Training
 g=1;
-for i in $(seq 0 $[mix_iters-1]); do
+for i in $(seq 1 $[mix_iters + 1]); do
     ## EM Iterations
     for k in $(seq 1 ${em_iters}); do
 	printf -- "--- Training %d states, %d mixtures (it. %d) ...\n" \
@@ -173,7 +173,7 @@ for i in $(seq 0 $[mix_iters-1]); do
         fi;
     done
     ## Increase number of mixtures of gaussians
-    [ $i -lt $[mix_iters - 1] ] && {
+    [ $i -lt $[mix_iters + 1] ] && {
 	ng=$(python -c \
 	    "from math import ceil; print int(ceil($g * $mix_factor))");
 	mkdir -p "${wdir}/gmm_${ng}/it_0";
