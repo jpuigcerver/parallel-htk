@@ -1,0 +1,304 @@
+#!/bin/bash
+
+# Copyright 2015  Joan Puigcerver
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# THIS CODE IS PROVIDED *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY IMPLIED
+# WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
+# MERCHANTABLITY OR NON-INFRINGEMENT.
+# See the Apache 2 License for the specific language governing permissions and
+# limitations under the License.
+
+set -e;
+export LC_NUMERIC=C;
+
+### Script directory.
+SDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd );
+### Load useful functions.
+. "${SDIR}/utils/functions.sh";
+
+beam=;            ### HERest -t
+beam_inc=;
+beam_max=;
+binary=true;          ### HERest -B
+htk_config=;          ### HERest -C
+em_update=tmvw;       ### HERest -u
+em_iters=5;           ### Maximum number of EM iterations, for each number of GMM mixtures
+hmm_min_samp=3;       ### HERest -m option
+keep=false;           ### Keep intermediate results
+mix_inc_scale=2;      ### Increase number of mixtures by this factor in each iteration
+mix_inc_iters=5;      ### Number of times the number of GMM mixtures will be increased
+mix_prunning=10.0;    ### HERest -c option
+mix_w_floor=0.0;      ### HERest -w
+num_jobs=1;           ### Controls HERest -p option
+overwrite=true;       ### Overwrite previously existing models
+print_stats=false;    ### Control HERest -s
+use_scripts=true;     ### Controls HERest -S option
+variance_min=0.0;     ### HERest -v
+help_message="
+Usage: ${0##*/} [options] <train_mlf> <hmm_list> <hmm_init> <out_dir> <train_file> ...
+
+Arguments:
+  train_mlf       : Training Master Label File, containing the transcription of
+                    the training data.
+  hmm_list        : File containing the list of HMM models to train.
+  hmm_init        : Initial HMM model used for training.
+  out_dir         : Working directory during training.
+  train_file(s)   : File(s) containing the training data samples.
+                    Option --use_scripts determines whether these files are
+                    interpreted as feature files or files containing the path of
+                    the features files (HTK script files).
+
+Options:
+  --beam          : type = float, default = ${beam}
+                    Initial prunning beam for the Forward-Backward algorithm.
+                    By default, no prunning is applied.
+  --beam_inc      : type = float, default = ${beam_inc}
+                    Increment in the prunning beam for the Forward-Backward,
+                    when the algorithm fails (requires --beam and --beam_max).
+  --beam_max      : type = float, default = ${beam_max}
+                    Maximum prunning beam for the Forward-Backward, when the
+                    algorithm fails (requires --beam and --beam_inc).
+  --binary        : type = boolean, default = ${binary}
+                    Save models in binary format to minimize disk space usage.
+  --em_update     : type = string, default = ${em_update}
+                    EM algorithm updates t)ransitions, m)eans, v)ariances,
+                    w)eights, and p)riors.
+  --em_iters      : type = integer, default = ${em_iters}
+                    Maximum number of EM iterations, for each number of mixt.
+  --hmm_min_samp  : type = integer, default = ${hmm_min_samp}
+                    Minimum number of samples required to update a HMM model.
+  --htk_config    : type = string, default = ${htk_config}
+                    Path to the configuration file used by HTK.
+  --keep_interm   : type = boolean, default = ${keep}
+                    If true, keeps intermediate results of training.
+  --mix_inc_scale : type = float, default = ${mix_inc_scale}
+                    Increase number of mixtures by this factor in each iter.
+  --mix_inc_iters : type = integer, default = ${mix_inc_iters}
+                    Number of times the number of mixtures will be increased.
+  --mix_prunning  : type = float, default = ${mix_prunning}
+                    Threshold for tied-mixture observation prunning.
+                    Only mixtures with fall with mix_prunning of the maximum
+                    mixture probability are used in calculating the state probs.
+  --mix_w_floor   : type = float, default = ${mix_w_floor}
+                    Set the mixtures weight floor to mix_w_floor * MINMIX
+  --num_jobs      : type = integer, default = ${num_jobs}
+                    Use this number of parallel processes for training.
+  --overwrite     : type = boolean, default = ${overwrite}
+                    If true, ignores previously existing models and starts
+                    training from scratch.
+  --print_stats   : type = boolean, default = ${print_stats}
+                    Print training statistics to an external file.
+  --use_scripts   : type = boolean, default = ${use_scripts}
+                    If true, interpret the training files as script files which
+                    contain a list of paths to the real feature files.
+                    If false, the inputs are interpreted as the real feature
+                    files used for training.
+  --variance_min  : type = float, default = ${variance_min}
+                    The minimum variance in the GMMs is set to this value.
+";
+
+. "${SDIR}/utils/parse_options.sh" >&2 || exit 1;
+[ $# -lt 5 ] && echo "${help_message}" >&2 && exit 1;
+
+train_mlf="$1";
+hmm_list="$2";
+hmm_init="$3";
+wdir="$4";
+shift 4;
+train_files=( "$@" );
+
+### Check beam prunning options.
+[[ -z "$beam" && ( -n "$beam_inc" || -n "$beam_max" ) ]] && \
+    echo "ERROR: --beam is required by --beam_inc and --beam_max" >&2 && \
+    exit 1;
+[[  ( -z "$beam_inc" && -n "$beam_max" ) || \
+    ( -n "$beam_inc" && -z "$beam_max" ) ]] &&
+    echo "ERROR: --beam_inc and --beam_max must be used together" >&2 && \
+    exit 1;
+[[  ( -n "$beam" && "$(echo "$beam > 0.0" | bc -l)" != 1 ) || \
+    ( -n "$beam_inc" && "$(echo "$beam_inc > 0.0" | bc -l)" != 1 ) || \
+    ( -n "$beam_max" && "$(echo "$beam_max > 0.0" | bc -l)" != 1 )  ]] && \
+    echo "ERROR: --beam, --beam_inc and --beam_max must be postive" >&2 && \
+    exit 1;
+[[ -n "$beam" && -n "$beam_max" && \
+    "$(echo "$beam >= $beam_max" | bc -l)" != 0 ]] && \
+    echo "ERROR: --beam_max must be greater than --beam" >&2 && \
+    exit 1;
+### Check number of EM iterations.
+[[ -n "$em_iters" && "$em_iters" -le 0 ]] && \
+    echo "ERROR: --em_iters must be a positive integer" >&2 && \
+    exit 1;
+### Check minimum number of samples per HMM model.
+[[ -z "$hmm_min_samp" || "$hmm_min_samp" -lt 0 ]] && \
+    echo "ERROR: --hmm_min_samp must be a positive integer or zero" >&2 && \
+    exit 1;
+### Check whether the specified config file exists or is empty.
+[[ -n "$htk_config" && \
+    ( ( ! -s "$htk_config" ) || ( ! -r "$htk_config" ) ) ]] && \
+    echo "ERROR: File \"$htk_config\" cannot be read!" >&2 && \
+    exit 1;
+### Check factor increasing the number of mixtures.
+[[ -z "$mix_inc_scale" || "$(echo "$mix_inc_scale > 1.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --mix_inc_scale must be greater than 1.0" >&2 && \
+    exit 1;
+### Check number of iterations increasing the number of mixtures.
+[[ -z "$mix_inc_iters" || "$mix_inc_iters" -lt 1 ]] && \
+    echo "ERROR: --mix_inc_iters must be a positive integer" >&2 && \
+    exit 1;
+### Check mixture prunning threshold.
+[[ -z "mix_prunning" || "$(echo "$mix_prunning > 0.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --mix_prunning must be greater than 0.0" >&2 && \
+    exit 1;
+### Check mixture weights floor
+[[ -z "$mix_w_floor" || "$(echo "$mix_w_floor >= 0.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --mix_w_floor must be greater than or equal to 0.0" >&2 && \
+    exit 1;
+### Check the number of jobs to launch
+[[ -z "$num_jobs" || "$num_jobs" -lt 1 ]] && \
+    echo "ERROR: --num_jobs must be a positive integer" >&2 && \
+    exit 1;
+### If the input files are real feature files, the number of parallel jobs
+### must be lower than or equal to the number of inputs.
+[[ "$use_scripts" = false && "$num_jobs" -gt "${#train_files[@]}" ]] && \
+    echo "WARNING: --num_jobs is set to ${#train_files[@]}" >&2 && \
+    num_jobs=${#train_files[@]};
+### Check minimum variance
+[[ -z "$variance_min" || "$(echo "$variance_min >= 0.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --variance_min must be greater than or equal to 0.0" >&2 && \
+    exit 1;
+### Normalize floating point numbers
+[[ -n "$beam" ]] && beam=$(normalize_float "$beam");
+[[ -n "$beam_inc" ]] && beam_inc=$(normalize_float "$beam_inc");
+[[ -n "$beam_max" ]] && beam_max=$(normalize_float "$beam_max");
+mix_inc_scale=$(normalize_float "$mix_inc_scale");
+mix_prunning=$(normalize_float "$mix_prunning");
+mix_w_floor=$(normalize_float "$mix_w_floor");
+variance_min=$(normalize_float "$variance_min");
+### Make sure that input files exists, and are readable.
+for f in "$train_mlf" "$hmm_list" "$hmm_init" "${train_files[@]}"; do
+    [[ ! -s "$f" || ! -r "$f" ]] && \
+	echo "ERROR: File \"${f}\" cannot be read or is empty!" >&2 && \
+	exit 1;
+done;
+### Assert that required executables are found in $PATH.
+check_execs HERest HHEd;
+
+exit 0;
+
+em_qsub_opts="${qsub_opts} -l h_vmem=${qsub_em_mem},h_rt=${qsub_em_rt}";
+hhed_qsub_opts="${qsub_opts} -l h_vmem=${qsub_hhed_mem},h_rt=${qsub_hhed_rt}";
+init_qsub_opts="${qsub_opts} -l h_vmem=${qsub_init_mem},h_rt=${qsub_init_rt}";
+
+## Check input files
+for file in "${config}" "${train_lst[@]}" "${train_mlf}" "${symb_lst}"; do
+    [ ! -s "${file}" ] && \
+        echo "ERROR (${0##*/}:${LINENO}): File \"${file}\" not found!" >&2 && \
+        exit 1;
+done
+
+## Extract number of features from HTK's config file
+feat_dim=$(awk 'toupper($1)=="NUMCEPS"{print $NF}' "${config}" | bc -s || { \
+    echo "ERROR (${0##*/}:${LINENO}): Failed to read NUMCEPS variable" >&2; \
+    exit 1; });
+
+## Compute global means and variances with HCompV and initialize HMMs
+echo "--- HMM Initialization ..."
+[[ ! -s "${wdir}/gmm_1/it_0/hmms" || "${overwrite}" = true ]] && {
+    mkdir -p "${wdir}/gmm_1/it_0"
+    bash "${CMD_PROTO}" "${feat_dim}" "${num_states}" > "${wdir}/proto" || { \
+        echo "ERROR (${0##*/}:${LINENO}): HMM proto creation failed!" >&2; \
+        exit 1; }
+    cat "${train_lst[@]}" > "${wdir}/HCompV.in"
+    if [ "${qsub}" = false ]; then
+        HCompV -A -T 1 -C "${config}" -f 0.01 -m -S "${wdir}/HCompV.in" \
+            -M "${wdir}" "${wdir}/proto" &> "${wdir}/HCompV.log" || { \
+            echo "ERROR (${0##*/}:${LINENO}): HCompV failed!" >&2; \
+            exit 1; }
+        bash "${CMD_HINIT}" "${wdir}/proto" "${wdir}/vFloors" "${symb_lst}" \
+            > "${wdir}/gmm_1/it_0/hmms" || { \
+            echo "ERROR (${0##*/}:${LINENO}): parallel-htk-hmm-init failed!" >&2; \
+            exit 1; }
+    else
+        last_jid=$(echo "
+date >&2;
+HCompV -A -T 1 -C \"${config}\" -f 0.01 -m -S \"${wdir}/HCompV.in\" \
+   -M \"${wdir}\" \"${wdir}/proto\" &> \"${wdir}/HCompV.log\" || { \
+   echo \"ERROR (${0##*/}:${LINENO}): HCompV failed!\" >&2; \
+   exit 1; }
+date >&2;
+bash \"${CMD_HINIT}\" \"${wdir}/proto\" \"${wdir}/vFloors\" \"${symb_lst}\" \
+    > \"${wdir}/gmm_1/it_0/hmms\" || { \
+    echo \"ERROR (${0##*/}:${LINENO}): parallel-htk-hmm-init failed!\" >&2; \
+    exit 1; }
+date >&2;
+" | qsub -cwd ${init_qsub_opts} | awk '/Your job/{print $3}' || { \
+    echo "ERROR (${0##*/}:${LINENO}): qsub job submission failed!"; \
+    exit 1; });
+        echo "--- Submitted job: ${last_jid}";
+    fi;
+}
+
+## HMM Training
+g=1;
+for i in $(seq 1 $[mix_iters + 1]); do
+    ## EM Iterations
+    for k in $(seq 1 ${em_iters}); do
+	printf -- "--- Training %d states, %d mixtures (it. %d) ...\n" \
+	    "${num_states}" "${g}" "${k}";
+	mkdir -p ${wdir}/gmm_${g}/it_${k};
+        if [ "${qsub}" = false ]; then
+            bash "${CMD_HERLOC}" --overwrite "${overwrite}" \
+                "${train_lst[@]}" "${train_mlf}" "${symb_lst}" \
+                "${config}" "${wdir}/gmm_${g}" "${k}" || exit 1;
+        else
+            last_jid=$(bash "${CMD_HERSGE}" \
+                --overwrite "${overwrite}" --hold_jid ${last_jid} \
+                --qsub_opts "${em_qsub_opts}" "${train_lst[@]}" "${train_mlf}" \
+                "${symb_lst}" "${config}" "${wdir}/gmm_${g}" "${k}" \
+                || exit 1);
+            echo "--- Submitted job: ${last_jid}";
+        fi;
+    done
+    ## Increase number of mixtures of gaussians
+    [ $i -lt $[mix_iters + 1] ] && {
+	ng=$(python -c \
+	    "from math import ceil; print int(ceil($g * $mix_factor))");
+	mkdir -p "${wdir}/gmm_${ng}/it_0";
+        [[ ! -s "${wdir}/gmm_${ng}/it_0/hmms" || "${overwrite}" = true ]] && {
+	    echo "MU ${ng} {*.state[2-$[num_states+1]].mix}" \
+	        > "${wdir}/gmm_${ng}/it_0/hhed_script";
+            if [ "${qsub}" = false ]; then
+	        HHEd -A -H "${wdir}/gmm_${g}/it_${em_iters}/hmms" \
+	            -M "${wdir}/gmm_${ng}/it_0" \
+                    "${wdir}/gmm_${ng}/it_0/hhed_script" "${symb_lst}" \
+	            &> "${wdir}/gmm_${ng}/it_0/HHEd.log" || { \
+                    echo "ERROR (${0##*/}:${LINENO}): HHEd failed for g=${g}, ng=${ng}" >&2; \
+                    exit 1; }
+            else
+                [ -n "${last_jid}" ] && hold_jid="-hold_jid ${last_jid}";
+                last_jid=$(echo "
+date >&2;
+HHEd -A -H \"${wdir}/gmm_${g}/it_${em_iters}/hmms\" \
+    -M \"${wdir}/gmm_${ng}/it_0\" \
+    \"${wdir}/gmm_${ng}/it_0/hhed_script\" \
+    \"${symb_lst}\"  &> \"${wdir}/gmm_${ng}/it_0/HHEd.log\" || { \
+    echo \"ERROR (${0##*/}:${LINENO}): HHEd failed for g=${g}, ng=${ng}\" >&2; \
+    exit 1; }
+date >&2;" | qsub -cwd ${hhed_qsub_opts} ${hold_jid} | \
+    awk '/Your job/{print $3}' || { \
+    echo "ERROR (${0##*/}:${LINENO}): qsub job submission failed!"; \
+    exit 1; });
+                echo "--- Submitted job: ${last_jid}";
+            fi;
+        }
+	g=$ng;
+    }
+done
+exit 0;

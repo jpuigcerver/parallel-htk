@@ -1,0 +1,349 @@
+#!/bin/bash
+
+# Copyright 2015  Joan Puigcerver
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# THIS CODE IS PROVIDED *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY IMPLIED
+# WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
+# MERCHANTABLITY OR NON-INFRINGEMENT.
+# See the Apache 2 License for the specific language governing permissions and
+# limitations under the License.
+
+set -e;
+export LC_NUMERIC=C;
+
+### Script directory.
+SDIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd );
+### Load useful functions.
+. "${SDIR}/utils/functions.sh";
+
+beam=;            ### HERest -t
+beam_inc=;
+beam_max=;
+binary=true;          ### HERest -B
+em_update=tmvw;       ### HERest -u
+hmm_min_samp=3;       ### HERest -m option
+htk_config=;          ### HERest -C
+mix_prunning=10.0;    ### HERest -c option
+mix_w_floor=0.0;      ### HERest -w
+num_jobs=1;           ### Controls HERest -p option
+overwrite=true;       ### Overwrite previously existing models
+print_stats=false;    ### Control HERest -s
+qsub=false;           ### Use qsub to launch the jobs
+qsub_opts=;           ### Global qsub options
+use_scripts=true;     ### Controls HERest -S option
+variance_min=0.0;     ### HERest -v
+help_message="
+Usage: ${0##*/} [options] <train_mlf> <hmm_list> <hmm_init> <out_dir> <train_file> ...
+
+Arguments:
+  train_mlf       : Training Master Label File, containing the transcription of
+                    the training data.
+  hmm_list        : File containing the list of HMM models to train.
+  hmm_init        : Initial HMM model used for training.
+  out_dir         : Working directory during training.
+  train_file(s)   : File(s) containing the training data samples.
+                    Option --use_scripts determines whether these files are
+                    interpreted as feature files or files containing the path of
+                    the features files (HTK script files).
+
+Options:
+  --beam          : type = float, default = ${beam}
+                    Initial prunning beam for the Forward-Backward algorithm.
+                    By default, no prunning is applied.
+  --beam_inc      : type = float, default = ${beam_inc}
+                    Increment in the prunning beam for the Forward-Backward,
+                    when the algorithm fails (requires --beam and --beam_max).
+  --beam_max      : type = float, default = ${beam_max}
+                    Maximum prunning beam for the Forward-Backward, when the
+                    algorithm fails (requires --beam and --beam_inc).
+  --binary        : type = boolean, default = ${binary}
+                    Save models in binary format to minimize disk space usage.
+  --em_update     : type = string, default = ${em_update}
+                    EM algorithm updates t)ransitions, m)eans, v)ariances,
+                    w)eights, and p)riors.
+  --hmm_min_samp  : type = integer, default = ${hmm_min_samp}
+                    Minimum number of samples required to update a HMM model.
+  --htk_config    : type = string, default = ${htk_config}
+                    Path to the configuration file used by HTK.
+  --mix_prunning  : type = float, default = ${mix_prunning}
+                    Threshold for tied-mixture observation prunning.
+                    Only mixtures with fall with mix_prunning of the maximum
+                    mixture probability are used in calculating the state probs.
+  --mix_w_floor   : type = float, default = ${mix_w_floor}
+                    Set the mixtures weight floor to mix_w_floor * MINMIX
+  --num_jobs      : type = integer, default = ${num_jobs}
+                    Use this number of parallel processes for training.
+  --overwrite     : type = boolean, default = ${overwrite}
+                    If true, ignores previously existing models and starts
+                    training from scratch.
+  --print_stats   : type = boolean, default = ${print_stats}
+                    Print training statistics to an external file.
+  --qsub          : type = boolean, default = ${qsub}
+                    Schedule jobs using qsub command.
+  --qsub_opts     : type = string, default = ${qsub_obts}
+                    Options passed to qsub. You probably will only need to
+                    change those refering to the number of resources you want
+                    to use, or whether or not you want this process to wait
+                    until the qsub tasks finish.
+  --use_scripts   : type = boolean, default = ${use_scripts}
+                    If true, interpret the training files as script files which
+                    contain a list of paths to the real feature files.
+                    If false, the inputs are interpreted as the real feature
+                    files used for training.
+  --variance_min  : type = float, default = ${variance_min}
+                    The minimum variance in the GMMs is set to this value.
+";
+
+. "${SDIR}/utils/parse_options.sh" >&2 || exit 1;
+[ $# -lt 5 ] && echo "${help_message}" >&2 && exit 1;
+
+train_mlf="$1";
+hmm_list="$2";
+hmm_init="$3";
+out_dir="$4";
+shift 4;
+train_files=( "$@" );
+
+### Check beam prunning options.
+[[ -z "$beam" && ( -n "$beam_inc" || -n "$beam_max" ) ]] && \
+    echo "ERROR: --beam is required by --beam_inc and --beam_max" >&2 && \
+    exit 1;
+[[  ( -z "$beam_inc" && -n "$beam_max" ) || \
+    ( -n "$beam_inc" && -z "$beam_max" ) ]] &&
+    echo "ERROR: --beam_inc and --beam_max must be used together" >&2 && \
+    exit 1;
+[[  ( -n "$beam" && "$(echo "$beam > 0.0" | bc -l)" != 1 ) || \
+    ( -n "$beam_inc" && "$(echo "$beam_inc > 0.0" | bc -l)" != 1 ) || \
+    ( -n "$beam_max" && "$(echo "$beam_max > 0.0" | bc -l)" != 1 )  ]] && \
+    echo "ERROR: --beam, --beam_inc and --beam_max must be postive" >&2 && \
+    exit 1;
+[[ -n "$beam" && -n "$beam_max" && \
+    "$(echo "$beam >= $beam_max" | bc -l)" != 0 ]] && \
+    echo "ERROR: --beam_max must be greater than --beam" >&2 && \
+    exit 1;
+### Check minimum number of samples per HMM model.
+[[ -z "$hmm_min_samp" || "$hmm_min_samp" -lt 0 ]] && \
+    echo "ERROR: --hmm_min_samp must be a positive integer or zero" >&2 && \
+    exit 1;
+### Check whether the specified config file exists or is empty.
+[[ -n "$htk_config" && \
+    ( ( ! -s "$htk_config" ) || ( ! -r "$htk_config" ) ) ]] && \
+    echo "ERROR: File \"$htk_config\" cannot be read!" >&2 && \
+    exit 1;
+### Check mixture prunning threshold.
+[[ -z "mix_prunning" || "$(echo "$mix_prunning > 0.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --mix_prunning must be greater than 0.0" >&2 && \
+    exit 1;
+### Check mixture weights floor
+[[ -z "$mix_w_floor" || "$(echo "$mix_w_floor >= 0.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --mix_w_floor must be greater than or equal to 0.0" >&2 && \
+    exit 1;
+### Check the number of jobs to launch
+[[ -z "$num_jobs" || "$num_jobs" -lt 1 ]] && \
+    echo "ERROR: --num_jobs must be a positive integer" >&2 && \
+    exit 1;
+### Check minimum variance
+[[ -z "$variance_min" || "$(echo "$variance_min >= 0.0" | bc -l)" != 1 ]] && \
+    echo "ERROR: --variance_min must be greater than or equal to 0.0" >&2 && \
+    exit 1;
+### Normalize floating point numbers
+[[ -n "$beam" ]] && beam=$(normalize_float "$beam");
+[[ -n "$beam_inc" ]] && beam_inc=$(normalize_float "$beam_inc");
+[[ -n "$beam_max" ]] && beam_max=$(normalize_float "$beam_max");
+mix_w_floor=$(normalize_float "$mix_w_floor");
+variance_min=$(normalize_float "$variance_min");
+### Make sure that all input files exist, and are readable.
+### Do not check for train_mlf, hmm_list or hmm_init just in case a previous
+### program generates them before calling these.
+for f in "${train_files[@]}"; do
+    [[ ! -f "$f" || ! -s "$f" || ! -r "$f" ]] && \
+	echo "ERROR: File \"${f}\" cannot be read or is empty!" >&2 && \
+	exit 1;
+done;
+### Assert that required executables are found in $PATH.
+check_execs HERest;
+### Decide whether we are going to repeat the training or not, and inform
+### the user about the decision.
+[[ -f "$out_dir/hmm" && -s "$out_dir/hmm" && "$overwrite" = false ]] && \
+    echo "WARNING: Existing model \"$out_dir/hmm\" was used." && \
+    exit 0;
+[[ -f "$out_dir/hmm" && -s "$out_dir/hmm" && "$overwrite" = true ]] && \
+    echo "WARNING: Existing model \"$out_dir/hmm\" was overwritten.";
+### Delete ould and create new output directory.
+rm -rf "$out_dir";
+make_dirs "$out_dir" "$out_dir/log";
+### Prepare HERest arguments.
+[ -n "$htk_config" ] && htk_config="-C \"${htk_config}\"";
+[ -n "$beam" ] && beam="-t $beam $beam_inc $beam_max";
+if [ "$binary" = true ]; then binary="-B"; else binary=""; fi;
+if [ "$print_stats" = true ]; then
+    print_stats="-s $out_dir/stats";
+else
+    print_stats=""; fi;
+### Prepare training script files
+if [[ $use_scripts = false || "${#train_files[@]}" -ne "$num_jobs" ]]; then
+    ### Read real training sample files.
+    if [ "$use_scripts" = true ]; then
+	train_files=( $(cat "${train_files[@]}" | \
+	    while IFS='' read -r line || [[ -n $line ]]; do echo "$line"; \
+	    done;) );
+    fi;
+    ### Make sure that all jobs have something to do.
+    [[ ${#train_files[@]} -lt $num_jobs ]] && \
+	echo "WARNING: --num_jobs is set to ${#train_files[@]}" >&2 && \
+	num_jobs=${#train_files[@]};
+    ### Remove previous script files.
+    rm -rf "$out_dir/scp"; make_dirs "$out_dir/scp";
+    ### Put all training files into a single script file.
+    for f in "${train_files[@]}"; do echo "$f"; done > "$out_dir/scp/all";
+    ### Split the main script file into $num_jobs parts.
+    split -a6 -d -n"l/$num_jobs" "$out_dir/scp/all" "$out_dir/scp/";
+    ### Remove main script file.
+    rm "$out_dir/scp/all";
+    ### Rename and assing the new script files to $train_files.
+    ### This will be the script files used by HERest, despite the fact that
+    ### parallel-htk-em-iter may be called with the --use_scripts option.
+    train_files=(
+	$(for p in $(seq 0 $[num_jobs - 1]); do
+	    mv "$out_dir/scp/$(printf "%06d" $p)" \
+		"$out_dir/scp/$[p+1]";
+	    echo "$out_dir/scp/$[p+1]";
+	    done;) );
+fi;
+
+[ "$qsub" = true ] && rm -rf "$out_dir/q" && make_dirs "$out_dir/q";
+
+if [ "$num_jobs" -eq 1 ]; then
+    ### Special case, when only 1 job is scheduled to run!
+    if [ "$qsub" = true ]; then
+	### Use qsub to submit the job
+	(
+	    cat <<EOF
+#!/bin/bash
+set -e;
+export LC_NUMERIC=C;
+(
+    date;
+    HERest -A $binary $htk_config -H "$hmm_init" -I "$train_mlf" \
+	-M "$out_dir" -S "${train_files[@]}" -T 1 -c "$mix_prunning" \
+	-m "$hmm_min_samp" $print_stats -u "$em_update" \
+	-v "$variance_min" -w "$mix_w_floor" "$hmm_list";
+    date;
+) &> "$out_dir/log/HERest.0.log" || {
+    echo "ERROR: HERest failed, see $out_dir/log/HERest.0.log" >&2;
+    exit 1;
+}
+exit 0;
+EOF
+	) > "$out_dir/q/parallel-htk-em-iter.sh";
+	qsub -v PATH -cwd -S /bin/bash -j y -o "$out_dir/q/log" $qsub_opts \
+	    "$out_dir/q/parallel-htk-em-iter.sh" | \
+	    awk '/Your job/{print $3}' > "$out_dir/q/jid";
+    else
+	### Launch a regular process in the local machine
+	(
+	    date;
+	    HERest -A $binary $htk_config -H "$hmm_init" -I "$train_mlf" \
+		-M "$out_dir" -S "${train_files[@]}" -T 1 -c "$mix_prunning" \
+		-m "$hmm_min_samp" $print_stats -u "$em_update" \
+		-v "$variance_min" -w "$mix_w_floor" "$hmm_list";
+	    date;
+	) &> "$out_dir/log/HERest.0.log" || {
+            echo "ERROR: HERest failed, see $out_dir/log/HERest.0.log" >&2;
+            exit 1;
+	}
+    fi;
+else
+    ### General case, when multiple jobs are scheduled.
+    if [ "$qsub" = true ]; then
+	(
+	    echo "#!/bin/bash";
+	    echo "set -e;";
+	    echo "export LC_NUMERIC=C;";
+	    for n in $(seq 1 "$num_jobs"); do
+		cat <<EOF
+[ \${SGE_TASK_ID} -eq ${n} ] && {
+    ( date;
+      ( HERest -A $binary $htk_config -H "$hmm_init" -I "$train_mlf" \
+          -M "$out_dir" -S "${train_files[$[n-1]]}" -T 1 \
+          -c "$mix_prunning" -m "$hmm_min_samp" -p "$n" $print_stats \
+          -u "$em_update" -v "$variance_min" -w "$mix_w_floor" \
+          "$hmm_list" && touch "$out_dir/q/$n.done"; ) || \
+      ( touch "$out_dir/q/$n.failed" && exit 1; );
+      date;
+    ) &> "$out_dir/log/HERest.$n.log" || {
+        echo "ERROR: HERest failed, see ${out_dir}/log/HERest.$n.log" >&2;
+	exit 1;
+    }
+}
+EOF
+	    done;
+	    ### Last task should also wait for all other tasks to finish, and
+	    ### accumulate the statistics gathered by the others and do the
+	    ### EM update.
+	    cat <<EOF
+[ \${SGE_TASK_ID} -eq $num_jobs ] && {
+    ( date;
+    ### Wait until all other tasks have finished correctly.
+    ### Abort if any of them failed.
+    tsleep=( 10 15 22 33 50 75 120 ); i=0;
+    while [ \$(find "$out_dir/q" -name "*.done" | wc -l) -lt $num_jobs ]; do
+        [ \$(find "$out_dir/q" -name "*.failed" | wc -l) -gt 0 ] && \
+            echo "ERROR: Some pending jobs failed!" && exit 1;
+        sleep \${tsleep[\$i]};
+        i=\$[i+1];
+        [ \$i -eq \${#tsleep[@]} ] && i=\$[ \${#tsleep[@]} - 1 ];
+    done;
+    ### Accumulate statistics and run EM re-estimation.
+    HERest -A $binary $htk_config -H "$hmm_init" -I "$train_mlf" \
+        -M "$out_dir" -T 1 -c "$mix_prunning" \
+	-m "$hmm_min_samp" -p 0 $print_stats -u "$em_update" \
+	-v "$variance_min" -w "$mix_w_floor" "$hmm_list" "$out_dir/HER"*.acc;
+    date; ) &> "$out_dir/log/HERest.0.log" || {
+        echo "ERROR: HERest failed, see ${out_dir}/log/HERest.0.log" >&2;
+	exit 1;
+    }
+}
+exit 0;
+EOF
+	) > "$out_dir/q/parallel-htk-em-iter.sh";
+	qsub -v PATH -cwd -S /bin/bash -j y -o "$out_dir/q/log" $qsub_opts \
+	    -t 1:$num_jobs "$out_dir/q/parallel-htk-em-iter.sh" | \
+	    awk '/Your job/{print $3}' > "$out_dir/q/jid";
+    else
+	for n in $(seq 1 "$num_jobs"); do
+	    (
+		date;
+		HERest -A $binary $htk_config -H "$hmm_init" -I "$train_mlf" \
+		    -M "$out_dir" -S "${train_files[$[n-1]]}" -T 1 \
+		    -c "$mix_prunning" -m "$hmm_min_samp" -p "$n" $print_stats \
+		    -u "$em_update" -v "$variance_min" -w "$mix_w_floor" \
+		    "$hmm_list";
+		date;
+	    ) &> "$out_dir/log/HERest.$n.log" || {
+		echo "ERROR: HERest failed, see ${out_dir}/log/HERest.$n.log" >&2;
+		exit 1;
+	    } &
+	done;
+	wait || exit 1;
+	(
+	    date;
+	    HERest -A $binary $htk_config -H "$hmm_init" -I "$train_mlf" \
+		-M "$out_dir" -T 1 -c "$mix_prunning" \
+		-m "$hmm_min_samp" -p 0 $print_stats -u "$em_update" \
+		-v "$variance_min" -w "$mix_w_floor" "$hmm_list" "$out_dir/HER"*.acc;
+	    date;
+	)    &> "$out_dir/log/HERest.0.log" || {
+	    echo "ERROR: HERest failed, see ${out_dir}/log/HERest.0.log" >&2;
+	    exit 1;
+	};
+    fi;
+fi;
+exit 0;
