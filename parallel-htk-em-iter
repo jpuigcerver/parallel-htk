@@ -296,7 +296,7 @@ EOF
     tsleep=( 10 15 22 33 50 75 120 ); i=0;
     while [ \$(find "$out_dir/q" -name "*.done" | wc -l) -lt $num_jobs ]; do
         [ \$(find "$out_dir/q" -name "*.failed" | wc -l) -gt 0 ] && \
-            echo "ERROR: Some pending jobs failed!" && exit 1;
+            echo "ERROR: Some pending jobs failed!" >&2 && exit 1;
         sleep \${tsleep[\$i]};
         i=\$[i+1];
         [ \$i -eq \${#tsleep[@]} ] && i=\$[ \${#tsleep[@]} - 1 ];
